@@ -23,7 +23,7 @@ LOGLEVEL_WARN = 2
 BACKUPMODE_INITIAL = 1
 BACKUPMODE_INCREMENTAL = 2
 
-SNAPSHOT_PREFIX: str = snapshotPrefix
+SNAPSHOT_PREFIX: str = args.snapshotPrefix
 
 class bcolors:
     HEADER = '\033[95m'
