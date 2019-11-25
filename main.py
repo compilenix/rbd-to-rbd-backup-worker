@@ -1,7 +1,5 @@
 #!/usr/bin/python3 -u
-import os, sys, argparse, stat, subprocess, json, random, traceback, re, time, signal
-
-import argparse
+import sys, argparse, subprocess, json, random, traceback, re, time, signal
 
 parser = argparse.ArgumentParser(description='tool to synchronize ceph rbd images between two clusters', usage='python3 main.py --source rbd/image_name --destination rbd_backup/backup_test_destination')
 
