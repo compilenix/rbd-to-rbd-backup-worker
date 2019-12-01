@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 import traceback
+from typing import Dict, Union
 
 parser = argparse.ArgumentParser(description='tool to synchronize ceph rbd images between two clusters, using ssh', usage='python3 main.py --source username@server:rbd/image_name --destination rbd_backup/backup_test_destination')
 
@@ -132,7 +133,7 @@ def get_previous_ceph_rbd_snapshot_name(pool: str, image: str, command_inject: s
     raise RuntimeError('cannot determine ceph snapshot name, aborting!')
 
 
-def get_backup_mode(from_source, to_destination, command_inject: str = ''):
+def get_backup_mode(from_source, to_destination, command_inject: str = '') -> Union[Dict[str, str], Dict[str, str]]:
     source_exists = ceph_rbd_image_exists(from_source['pool'], from_source['image'], command_inject)
     if not source_exists:
         raise RuntimeError('invalid arguments, source image does not exist ' + ceph_rbd_object_to_path(from_source))
@@ -150,7 +151,7 @@ def get_backup_mode(from_source, to_destination, command_inject: str = ''):
         raise RuntimeError('inconsistent state, source snapshot not found but destination does exist')
 
     if source_previous_snapshot_count == 0 and not destination_exists:
-        return {'mode': BACKUPMODE_INITIAL}
+        return {'mode': BACKUPMODE_INITIAL, 'base_snapshot': ''}
     else:
         return {'mode': BACKUPMODE_INCREMENTAL, 'base_snapshot': get_previous_ceph_rbd_snapshot_name(from_source['pool'], from_source['image'], command_inject)}
 
@@ -179,7 +180,7 @@ def remove_ceph_rbd_snapshot(pool: str, image: str, snapshot: str, command_injec
 
 
 def get_ceph_rbd_properties(pool: str, image: str, command_inject: str = ''):
-    return exec_parse_json('rbd -p ' + pool + ' --format json info ' + image, command_inject)
+    return exec_parse_json(command_inject + 'rbd -p ' + pool + ' --format json info ' + image)
 
 
 def set_ceph_scrubbing(enable: bool, command_inject: str = ''):
@@ -235,26 +236,24 @@ try:
         create_ceph_rbd_image(destination_pool, destination_image)
         log_message('beginning full copy from ' + ceph_rbd_object_to_path(source) + ' to ' + ceph_rbd_object_to_path(destination), LOGLEVEL_INFO)
 
-        # TODO: start full image copy, using export-diff, to destination
-        # ssh $DESTHOST rbd export-diff $SOURCEPOOL/$LOCAL_IMAGE@$TODAY - | rbd import-diff - $DESTPOOL/$LOCAL_IMAGE
-        exec_raw(execute_on_remote_command + 'rbd export-diff ' + whole_object_command + source_pool + '/' + source_image + ' - 2>/dev/null | pv --rate --bytes | rbd import-diff - ' + destination_pool + '/' + destination_image + ' 2>/dev/null')
+        exec_raw(execute_on_remote_command + 'rbd export-diff ' + whole_object_command + ceph_rbd_object_to_path(source) + ' - 2>/dev/null | pv --rate --bytes | rbd import-diff - ' + ceph_rbd_object_to_path(destination) + ' 2>/dev/null')
 
         log_message('copy finished', LOGLEVEL_INFO)
         create_ceph_rbd_snapshot(source_pool, source_image, execute_on_remote_command)
         create_ceph_rbd_snapshot(destination_pool, destination_image)
 
     if mode['mode'] == BACKUPMODE_INCREMENTAL:
-        snapshot1 = mode['base_snapshot']
-        snapshot2 = create_ceph_rbd_snapshot(source_pool, source_image, execute_on_remote_command)
+        snapshot_old = mode['base_snapshot']
+        snapshot_new = create_ceph_rbd_snapshot(source_pool, source_image, execute_on_remote_command)
 
-        log_message('beginning incremental copy from ' + ceph_rbd_object_to_path(source) + ' to ' + ceph_rbd_object_to_path(destination), LOGLEVEL_INFO)
+        log_message('beginning incremental copy from ' + ceph_rbd_object_to_path(source) + '@' + snapshot_old + ' to ' + ceph_rbd_object_to_path(destination), LOGLEVEL_INFO)
 
-        # TODO: start incremental image copy, using export-diff, to destination
-        # TODO: datarate to strderr via command "pv"
+        #ssh rbd export-diff --from-snap $YESTERDAY $SOURCEPOOL/$LOCAL_IMAGE@$TODAY - | $DESTHOST rbd import-diff - $DESTPOOL/$LOCAL_IMAGE
+        exec_raw(execute_on_remote_command + 'rbd export-diff ' + whole_object_command + ' --from-snap ' + snapshot_old + ' ' + ceph_rbd_object_to_path(source) + '@' + snapshot_new + ' - 2>/dev/null | pv --rate --bytes | rbd import-diff - ' + ceph_rbd_object_to_path(destination) + ' 2>/dev/null')
 
         log_message('copy finished', LOGLEVEL_INFO)
         create_ceph_rbd_snapshot(destination_pool, destination_image)
-        remove_ceph_rbd_snapshot(source_pool, source_image, snapshot, execute_on_remote_command)
+        remove_ceph_rbd_snapshot(source_pool, source_image, snapshot_old, execute_on_remote_command)
 
     log_message(BackgroundColors.OKGREEN + 'Done with ' + ceph_rbd_object_to_path(source) + ' -> ' + ceph_rbd_object_to_path(destination) + BackgroundColors.ENDC, LOGLEVEL_INFO)
 
