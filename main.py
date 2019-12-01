@@ -57,7 +57,7 @@ def log_message(message: str, level: int) -> None:
             print(message)
 
 
-def sizeof_fmt(num: float, suffix: str ='B') -> str:
+def sizeof_fmt(num: float, suffix: str = 'B') -> str:
     for unit in ['','Ki','Mi','Gi','Ti','Pi','Ei','Zi']:
         if abs(num) < 1024.0:
             return "%3.1f %s%s" % (num, unit, suffix)
@@ -92,7 +92,11 @@ def ceph_rbd_object_to_path(obj):
 
 remoteConnectionCommand = args.source.split(':')[0]
 source = ceph_rbd_path_to_object(args.source.split(':')[1])
+source_pool = source['pool']
+source_image = source['image']
 destination = ceph_rbd_path_to_object(args.destination)
+destination_pool = destination['pool']
+destination_image = destination['image']
 
 
 # ----------------------------------------------------------------------------
@@ -120,7 +124,7 @@ def count_previous_ceph_rbd_snapsots(pool: str, image: str, command_inject: str 
     return count
 
 
-def previous_ceph_rbd_snapsot_name(pool: str, image: str, command_inject: str = ''):
+def get_previous_ceph_rbd_snapshot_name(pool: str, image: str, command_inject: str = ''):
     log_message('get ceph snapshot name for image ' + command_inject + pool + '/' + image, LOGLEVEL_INFO)
     for current_snapshot in get_ceph_snapshots(pool, image, command_inject):
         if current_snapshot['name'].startswith(SNAPSHOT_PREFIX, 0, len(SNAPSHOT_PREFIX)):
@@ -151,10 +155,10 @@ def get_backup_mode(from_source, to_destination, command_inject: str = ''):
     if source_previous_snapshot_count == 0 and not destination_exists:
         return {'mode': BACKUPMODE_INITIAL}
     else:
-        return {'mode': BACKUPMODE_INCREMENTAL, 'base_snapshot': previous_ceph_rbd_snapsot_name(from_source['pool'], from_source['image'], command_inject)}
+        return {'mode': BACKUPMODE_INCREMENTAL, 'base_snapshot': get_previous_ceph_rbd_snapshot_name(from_source['pool'], from_source['image'], command_inject)}
 
 
-def create_ceph_rbd_snapshot(pool: str, image: str, command_inject: str = ''):
+def create_ceph_rbd_snapshot(pool: str, image: str, command_inject: str = '') -> str:
     log_message('creating ceph snapshot for image ' + command_inject + pool + '/' + image, LOGLEVEL_INFO)
     name = SNAPSHOT_PREFIX + ''.join([random.choice('0123456789abcdef') for _ in range(16)])
     log_message('exec command "' + command_inject + 'rbd -p ' + pool + ' snap create ' + image + '@' + name + '"', LOGLEVEL_INFO)
@@ -166,6 +170,11 @@ def create_ceph_rbd_snapshot(pool: str, image: str, command_inject: str = ''):
         raise RuntimeError('error creating ceph snapshot code: ' + str(code))
     log_message('ceph snapshot created ' + name, LOGLEVEL_INFO)
     return name
+
+
+def create_ceph_rbd_image(pool: str, image: str, command_inject: str = ''):
+    log_message('creating ceph rbd image ' + command_inject + pool + '/' + image, LOGLEVEL_INFO)
+    exec_raw(command_inject + 'rbd create ' + pool + '/' + image + ' -s 1')
 
 
 def remove_ceph_rbd_snapshot(pool: str, image: str, snapshot: str, command_inject: str = ''):
@@ -199,7 +208,7 @@ def wait_for_ceph_scrubbing_completion(command_inject: str = ''):
         time.sleep(5)
 
 
-def cleanup(arg1 = None, arg2 = None, command_inject: str = ''):
+def cleanup(arg1=None, arg2=None, command_inject: str = ''):
     log_message('cleaning up...', LOGLEVEL_INFO)
 
     if args.noScrubbing:
@@ -207,39 +216,37 @@ def cleanup(arg1 = None, arg2 = None, command_inject: str = ''):
 
 
 try:
-    executeOnRemoteCommand = 'ssh ' + remoteConnectionCommand + ' '
+    execute_on_remote_command = 'ssh ' + remoteConnectionCommand + ' -T -o Compression=no -x '
     signal.signal(signal.SIGINT, cleanup)
     signal.signal(signal.SIGTERM, cleanup)
-    mode = get_backup_mode(source, destination, executeOnRemoteCommand)
+    mode = get_backup_mode(source, destination, execute_on_remote_command)
 
     if args.waitHealthy or args.noScrubbing:
         wait_for_ceph_cluster_healthy()
-        wait_for_ceph_cluster_healthy(executeOnRemoteCommand)
+        wait_for_ceph_cluster_healthy(execute_on_remote_command)
     if args.noScrubbing:
         set_ceph_scrubbing(False)
-        set_ceph_scrubbing(False, executeOnRemoteCommand)
+        set_ceph_scrubbing(False, execute_on_remote_command)
         wait_for_ceph_scrubbing_completion()
-        wait_for_ceph_scrubbing_completion(executeOnRemoteCommand)
+        wait_for_ceph_scrubbing_completion(execute_on_remote_command)
 
     if mode['mode'] == BACKUPMODE_INITIAL:
-        snapshot = create_ceph_rbd_snapshot(source['pool'], source['image'], executeOnRemoteCommand)
-        # TODO: create target image
-        #createZfsVolume(args.destination, getCephRbdProperties(args.source)['size'])
-        #sourcePath = mapCephRbdImage(args.source + '@' + snapshot)
-        #size = compareDeviceSize(sourcePath, destinationPath)
+        snapshot = create_ceph_rbd_snapshot(source_pool, source_image, execute_on_remote_command)
+        create_ceph_rbd_image(destination_pool, destination_image)
 
         log_message('beginning full copy from ' + ceph_rbd_object_to_path(source) + ' to ' + ceph_rbd_object_to_path(destination), LOGLEVEL_INFO)
 
         # TODO: start full image copy, using export-diff, to destination
-        # TODO: datarate to strderr via command "pv"
+        # ssh $DESTHOST rbd export-diff $SOURCEPOOL/$LOCAL_IMAGE@$TODAY - | rbd import-diff - $DESTPOOL/$LOCAL_IMAGE
+        exec_raw(execute_on_remote_command + 'rbd rbd export-diff ' + source_pool + '/' + source_image + '@' + snapshot + ' - 2>/deb/null | pv --rate --bytes | rbd import-diff - ' + destination_pool + '/' + destination_image + ' 2>/deb/null')
 
         log_message('copy finished', LOGLEVEL_INFO)
-        create_ceph_rbd_snapshot(destination['pool'], destination['image'])
-        remove_ceph_rbd_snapshot(source['pool'], source['image'], snapshot, executeOnRemoteCommand)
+        create_ceph_rbd_snapshot(destination_pool, destination_image)
+        remove_ceph_rbd_snapshot(source_pool, source_image, snapshot, execute_on_remote_command)
 
     if mode['mode'] == BACKUPMODE_INCREMENTAL:
         snapshot1 = mode['base_snapshot']
-        snapshot2 = create_ceph_rbd_snapshot(source['pool'], source['image'], executeOnRemoteCommand)
+        snapshot2 = create_ceph_rbd_snapshot(source_pool, source_image, execute_on_remote_command)
 
         log_message('beginning incremental copy from ' + ceph_rbd_object_to_path(source) + ' to ' + ceph_rbd_object_to_path(destination), LOGLEVEL_INFO)
 
@@ -247,8 +254,8 @@ try:
         # TODO: datarate to strderr via command "pv"
 
         log_message('copy finished', LOGLEVEL_INFO)
-        create_ceph_rbd_snapshot(destination['pool'], destination['image'])
-        remove_ceph_rbd_snapshot(source['pool'], source['image'], snapshot, executeOnRemoteCommand)
+        create_ceph_rbd_snapshot(destination_pool, destination_image)
+        remove_ceph_rbd_snapshot(source_pool, source_image, snapshot, execute_on_remote_command)
 
     log_message(BackgroundColors.OKGREEN + 'Done with ' + ceph_rbd_object_to_path(source) + ' -> ' + ceph_rbd_object_to_path(destination) + BackgroundColors.ENDC, LOGLEVEL_INFO)
 
