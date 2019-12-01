@@ -15,10 +15,10 @@ parser.add_argument('-v', '--verbose', action="store_true", dest='verbose', defa
 parser.add_argument('-vv', '--debug', action="store_true", dest='debug', default=False, help='print debug output')
 parser.add_argument('-s', '--source', action="store", dest='source', help='the source ceph rbd image: username@server:rbd/image_name', type=str, required=True)
 parser.add_argument('-d', '--destination', action="store", dest='destination', help='the destination ceph rbd image: rbd_backup/backup_test_destination', type=str, required=True)
-parser.add_argument('-p', '--snapshot-prefix', action="store", dest='snapshotPrefix', help='', required=True, default='backup_snapshot_')
-parser.add_argument('-w', '--whole-object', action="store_true", dest='wholeObject', help='do not diff for intra-object deltas. Dramatically improves diff performance but may result in larger delta backup', required=False, default=True)
-parser.add_argument('-healthy', '--wait-until-healthy', action="store_true", dest='waitHealthy', help='wait until cluster is healthy', required=False, default=True)
-parser.add_argument('-no-scrub', '--no-scrubbing', action="store_true", dest='noScrubbing', help='wait for scrubbing to finnish and disable scrubbing (does re-enable scrubbing automatically). This implies --wait-until-healthy', required=False, default=False)
+parser.add_argument('-p', '--snapshot-prefix', action="store", dest='snapshot_prefix', help='', required=True, default='backup_snapshot_')
+parser.add_argument('-w', '--whole-object', action="store_true", dest='whole_object', help='do not diff for intra-object deltas. Dramatically improves diff performance but may result in larger delta backup', required=False, default=True)
+parser.add_argument('-healthy', '--wait-until-healthy', action="store_true", dest='wait_healthy', help='wait until cluster is healthy', required=False, default=True)
+parser.add_argument('-no-scrub', '--no-scrubbing', action="store_true", dest='no_scrubbing', help='wait for scrubbing to finnish and disable scrubbing (does re-enable scrubbing automatically). This implies --wait-until-healthy', required=False, default=False)
 
 args = parser.parse_args()
 
@@ -29,7 +29,7 @@ LOGLEVEL_WARN = 2
 BACKUPMODE_INITIAL = 1
 BACKUPMODE_INCREMENTAL = 2
 
-SNAPSHOT_PREFIX: str = args.snapshotPrefix
+SNAPSHOT_PREFIX: str = args.snapshot_prefix
 
 
 class BackgroundColors:
@@ -137,10 +137,7 @@ def get_backup_mode(from_source, to_destination, command_inject: str = ''):
     if not source_exists:
         raise RuntimeError('invalid arguments, source image does not exist ' + ceph_rbd_object_to_path(from_source))
 
-    destination_exists = ceph_rbd_image_exists(to_destination['pool'], to_destination['image'], command_inject)
-    if not destination_exists:
-        raise RuntimeError('invalid arguments, destination image does not exist ' + ceph_rbd_object_to_path(to_destination))
-
+    destination_exists = ceph_rbd_image_exists(to_destination['pool'], to_destination['image'])
     source_previous_snapshot_count = count_previous_ceph_rbd_snapsots(from_source['pool'], from_source['image'], command_inject)
 
     if source_previous_snapshot_count > 1:
@@ -211,7 +208,7 @@ def wait_for_ceph_scrubbing_completion(command_inject: str = ''):
 def cleanup(arg1=None, arg2=None, command_inject: str = ''):
     log_message('cleaning up...', LOGLEVEL_INFO)
 
-    if args.noScrubbing:
+    if args.no_scrubbing:
         set_ceph_scrubbing(True, command_inject)
 
 
@@ -220,29 +217,31 @@ try:
     signal.signal(signal.SIGINT, cleanup)
     signal.signal(signal.SIGTERM, cleanup)
     mode = get_backup_mode(source, destination, execute_on_remote_command)
+    whole_object_command = ''
 
-    if args.waitHealthy or args.noScrubbing:
+    if args.whole_object:
+        whole_object_command = ' --whole-object '
+
+    if args.wait_healthy or args.no_scrubbing:
         wait_for_ceph_cluster_healthy()
         wait_for_ceph_cluster_healthy(execute_on_remote_command)
-    if args.noScrubbing:
+    if args.no_scrubbing:
         set_ceph_scrubbing(False)
         set_ceph_scrubbing(False, execute_on_remote_command)
         wait_for_ceph_scrubbing_completion()
         wait_for_ceph_scrubbing_completion(execute_on_remote_command)
 
     if mode['mode'] == BACKUPMODE_INITIAL:
-        snapshot = create_ceph_rbd_snapshot(source_pool, source_image, execute_on_remote_command)
         create_ceph_rbd_image(destination_pool, destination_image)
-
         log_message('beginning full copy from ' + ceph_rbd_object_to_path(source) + ' to ' + ceph_rbd_object_to_path(destination), LOGLEVEL_INFO)
 
         # TODO: start full image copy, using export-diff, to destination
         # ssh $DESTHOST rbd export-diff $SOURCEPOOL/$LOCAL_IMAGE@$TODAY - | rbd import-diff - $DESTPOOL/$LOCAL_IMAGE
-        exec_raw(execute_on_remote_command + 'rbd rbd export-diff ' + source_pool + '/' + source_image + '@' + snapshot + ' - 2>/deb/null | pv --rate --bytes | rbd import-diff - ' + destination_pool + '/' + destination_image + ' 2>/deb/null')
+        exec_raw(execute_on_remote_command + 'rbd export-diff ' + whole_object_command + source_pool + '/' + source_image + ' - 2>/dev/null | pv --rate --bytes | rbd import-diff - ' + destination_pool + '/' + destination_image + ' 2>/dev/null')
 
         log_message('copy finished', LOGLEVEL_INFO)
+        create_ceph_rbd_snapshot(source_pool, source_image, execute_on_remote_command)
         create_ceph_rbd_snapshot(destination_pool, destination_image)
-        remove_ceph_rbd_snapshot(source_pool, source_image, snapshot, execute_on_remote_command)
 
     if mode['mode'] == BACKUPMODE_INCREMENTAL:
         snapshot1 = mode['base_snapshot']
