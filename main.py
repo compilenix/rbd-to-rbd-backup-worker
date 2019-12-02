@@ -68,7 +68,11 @@ def sizeof_fmt(num: float, suffix: str = 'B') -> str:
 
 def exec_raw(command: str) -> str:
     log_message('exec command "' + command + '"', LOGLEVEL_INFO)
-    return str(subprocess.Popen(command, shell=True, stdout=subprocess.PIPE).stdout.read().decode("utf-8")).strip("\n")
+    process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE)
+    process.wait()
+    if process.returncode != 0:
+        raise RuntimeError(BackgroundColors.FAIL + 'command failed with code: ' + str(process.returncode) + BackgroundColors.ENDC)
+    return str(process.stdout.read().decode("utf-8")).strip("\n")
 
 
 def exec_parse_json(command: str):
