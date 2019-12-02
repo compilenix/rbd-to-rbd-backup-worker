@@ -237,10 +237,11 @@ try:
         wait_for_ceph_scrubbing_completion(execute_on_remote_command)
 
     if mode['mode'] == BACKUPMODE_INITIAL:
-        create_ceph_rbd_image(destination_pool, destination_image)
-        log_message('beginning full copy from ' + ceph_rbd_object_to_path(source) + ' to ' + ceph_rbd_object_to_path(destination), LOGLEVEL_INFO)
+        # Image creation on rbd import isn't required
+        log_message('beginning full copy from "' + execute_on_remote_command + ceph_rbd_object_to_path(source) + '" to ' + ceph_rbd_object_to_path(destination), LOGLEVEL_INFO)
+        image_size = exec_parse_json(execute_on_remote_command + 'rbd info ' + ceph_rbd_object_to_path(source) + ' --format json')['size']
 
-        exec_raw(execute_on_remote_command + 'rbd export-diff ' + whole_object_command + ceph_rbd_object_to_path(source) + ' - 2>/dev/null | pv --rate --bytes | rbd import-diff - ' + ceph_rbd_object_to_path(destination) + ' 2>/dev/null')
+        exec_raw('/bin/bash -c set -o pipefail; ' + execute_on_remote_command + '"rbd export --no-progress ' + ceph_rbd_object_to_path(source) + ' -" | pv --rate --bytes --progress --timer --eta --size ' + str(image_size) + ' | rbd import --no-progress - ' + ceph_rbd_object_to_path(destination))
 
         log_message('copy finished', LOGLEVEL_INFO)
         create_ceph_rbd_snapshot(source_pool, source_image, execute_on_remote_command)
@@ -250,16 +251,16 @@ try:
         snapshot_old = mode['base_snapshot']
         snapshot_new = create_ceph_rbd_snapshot(source_pool, source_image, execute_on_remote_command)
 
-        log_message('beginning incremental copy from ' + ceph_rbd_object_to_path(source) + '@' + snapshot_old + ' to ' + ceph_rbd_object_to_path(destination), LOGLEVEL_INFO)
+        log_message('beginning incremental copy from "' + execute_on_remote_command + ceph_rbd_object_to_path(source) + '@' + snapshot_old + '" to ' + ceph_rbd_object_to_path(destination), LOGLEVEL_INFO)
 
         #ssh rbd export-diff --from-snap $YESTERDAY $SOURCEPOOL/$LOCAL_IMAGE@$TODAY - | $DESTHOST rbd import-diff - $DESTPOOL/$LOCAL_IMAGE
-        exec_raw(execute_on_remote_command + 'rbd export-diff ' + whole_object_command + ' --from-snap ' + snapshot_old + ' ' + ceph_rbd_object_to_path(source) + '@' + snapshot_new + ' - 2>/dev/null | pv --rate --bytes | rbd import-diff - ' + ceph_rbd_object_to_path(destination) + ' 2>/dev/null')
+        exec_raw('/bin/bash -c set -o pipefail; ' + execute_on_remote_command + '"rbd export-diff --no-progress ' + whole_object_command + ' --from-snap ' + snapshot_old + ' ' + ceph_rbd_object_to_path(source) + '@' + snapshot_new + ' -" | pv --rate --bytes | rbd import-diff --no-progress - ' + ceph_rbd_object_to_path(destination))
 
         log_message('copy finished', LOGLEVEL_INFO)
         create_ceph_rbd_snapshot(destination_pool, destination_image)
         remove_ceph_rbd_snapshot(source_pool, source_image, snapshot_old, execute_on_remote_command)
 
-    log_message(BackgroundColors.OKGREEN + 'Done with ' + ceph_rbd_object_to_path(source) + ' -> ' + ceph_rbd_object_to_path(destination) + BackgroundColors.ENDC, LOGLEVEL_INFO)
+    log_message('Done with ' + BackgroundColors.OKGREEN + remoteConnectionCommand + ceph_rbd_object_to_path(source) + BackgroundColors.ENDC + ' -> ' + BackgroundColors.OKGREEN + ceph_rbd_object_to_path(destination) + BackgroundColors.ENDC, LOGLEVEL_INFO)
 
 
 except KeyboardInterrupt:
