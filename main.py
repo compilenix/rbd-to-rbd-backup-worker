@@ -33,17 +33,6 @@ BACKUPMODE_INCREMENTAL = 2
 SNAPSHOT_PREFIX: str = args.snapshot_prefix
 
 
-class BackgroundColors:
-    HEADER = '\033[95m'
-    OKBLUE = '\033[94m'
-    OKGREEN = '\033[92m'
-    WARNING = '\033[93m'
-    FAIL = '\033[91m'
-    ENDC = '\033[0m'
-    BOLD = '\033[1m'
-    UNDERLINE = '\033[4m'
-
-
 def print_std_err(message: str) -> None:
     print(str, file=sys.stderr)
 
@@ -71,7 +60,7 @@ def exec_raw(command: str) -> str:
     process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE)
     process.wait()
     if process.returncode != 0:
-        raise RuntimeError(BackgroundColors.FAIL + 'command failed with code: ' + str(process.returncode) + BackgroundColors.ENDC)
+        raise RuntimeError('command failed with code: ' + str(process.returncode))
     return str(process.stdout.read().decode("utf-8")).strip("\n")
 
 
@@ -160,9 +149,12 @@ def get_backup_mode(from_source, to_destination, command_inject: str = '') -> Un
         return {'mode': BACKUPMODE_INCREMENTAL, 'base_snapshot': get_previous_ceph_rbd_snapshot_name(from_source['pool'], from_source['image'], command_inject)}
 
 
-def create_ceph_rbd_snapshot(pool: str, image: str, command_inject: str = '') -> str:
+def create_ceph_rbd_snapshot(pool: str, image: str, new_snapshot_name: str = '', command_inject: str = '') -> str:
     log_message('creating ceph snapshot for image ' + command_inject + pool + '/' + image, LOGLEVEL_INFO)
-    name = SNAPSHOT_PREFIX + ''.join([random.choice('0123456789abcdef') for _ in range(16)])
+    if len(new_snapshot_name.strip()) == 0:
+        name = SNAPSHOT_PREFIX + ''.join([random.choice('0123456789abcdef') for _ in range(16)])
+    else:
+        name = new_snapshot_name
     log_message('exec command "' + command_inject + 'rbd -p ' + pool + ' snap create ' + image + '@' + name + '"', LOGLEVEL_INFO)
     if command_inject != '':
         code = subprocess.call(command_inject.strip().split(' ') + ['rbd', '-p', pool, 'snap', 'create', image + '@' + name])
@@ -244,33 +236,31 @@ try:
         exec_raw('/bin/bash -c set -o pipefail; ' + execute_on_remote_command + '"rbd export --no-progress ' + ceph_rbd_object_to_path(source) + ' -" | pv --rate --bytes --progress --timer --eta --size ' + str(image_size) + ' | rbd import --no-progress - ' + ceph_rbd_object_to_path(destination))
 
         log_message('copy finished', LOGLEVEL_INFO)
-        create_ceph_rbd_snapshot(source_pool, source_image, execute_on_remote_command)
-        create_ceph_rbd_snapshot(destination_pool, destination_image)
+        snapshot_name = create_ceph_rbd_snapshot(source_pool, source_image, command_inject=execute_on_remote_command)
+        create_ceph_rbd_snapshot(destination_pool, destination_image, snapshot_name)
 
     if mode['mode'] == BACKUPMODE_INCREMENTAL:
         snapshot_old = mode['base_snapshot']
-        snapshot_new = create_ceph_rbd_snapshot(source_pool, source_image, execute_on_remote_command)
+        snapshot_new = create_ceph_rbd_snapshot(source_pool, source_image, command_inject=execute_on_remote_command)
 
         log_message('beginning incremental copy from "' + execute_on_remote_command + ceph_rbd_object_to_path(source) + '@' + snapshot_old + '" to ' + ceph_rbd_object_to_path(destination), LOGLEVEL_INFO)
 
-        #ssh rbd export-diff --from-snap $YESTERDAY $SOURCEPOOL/$LOCAL_IMAGE@$TODAY - | $DESTHOST rbd import-diff - $DESTPOOL/$LOCAL_IMAGE
         exec_raw('/bin/bash -c set -o pipefail; ' + execute_on_remote_command + '"rbd export-diff --no-progress ' + whole_object_command + ' --from-snap ' + snapshot_old + ' ' + ceph_rbd_object_to_path(source) + '@' + snapshot_new + ' -" | pv --rate --bytes | rbd import-diff --no-progress - ' + ceph_rbd_object_to_path(destination))
 
         log_message('copy finished', LOGLEVEL_INFO)
-        create_ceph_rbd_snapshot(destination_pool, destination_image)
         remove_ceph_rbd_snapshot(source_pool, source_image, snapshot_old, execute_on_remote_command)
 
-    log_message('Done with ' + BackgroundColors.OKGREEN + remoteConnectionCommand + ceph_rbd_object_to_path(source) + BackgroundColors.ENDC + ' -> ' + BackgroundColors.OKGREEN + ceph_rbd_object_to_path(destination) + BackgroundColors.ENDC, LOGLEVEL_INFO)
+    log_message('Done with ' + remoteConnectionCommand + ':' + ceph_rbd_object_to_path(source) + ' -> ' + ceph_rbd_object_to_path(destination), LOGLEVEL_INFO)
 
 
 except KeyboardInterrupt:
-    log_message(BackgroundColors.WARNING + 'Interrupt, terminating...' + BackgroundColors.ENDC, LOGLEVEL_WARN)
+    log_message('Interrupt, terminating...', LOGLEVEL_WARN)
 
 except RuntimeError as e:
-    log_message(BackgroundColors.FAIL + 'runtime exception ' + str(e) + BackgroundColors.ENDC, LOGLEVEL_WARN)
+    log_message('runtime exception ' + str(e), LOGLEVEL_WARN)
 
 except Exception as e:
-    log_message(BackgroundColors.FAIL + 'unexpected exception (probably a bug): ' + str(e) + BackgroundColors.ENDC, LOGLEVEL_WARN)
+    log_message('unexpected exception (probably a bug): ' + str(e), LOGLEVEL_WARN)
     traceback.print_exc()
 
 finally:
