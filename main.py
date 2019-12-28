@@ -232,11 +232,11 @@ try:
         # Image creation on rbd import isn't required
         log_message('beginning full copy from "' + execute_on_remote_command + ceph_rbd_object_to_path(source) + '" to ' + ceph_rbd_object_to_path(destination), LOGLEVEL_INFO)
         image_size = exec_parse_json(execute_on_remote_command + 'rbd info ' + ceph_rbd_object_to_path(source) + ' --format json')['size']
+        snapshot_name = create_ceph_rbd_snapshot(source_pool, source_image, command_inject=execute_on_remote_command)
 
-        exec_raw('/bin/bash -c set -o pipefail; ' + execute_on_remote_command + '"rbd export --no-progress ' + ceph_rbd_object_to_path(source) + ' -" | pv --rate --bytes --progress --timer --eta --size ' + str(image_size) + ' | rbd import --no-progress - ' + ceph_rbd_object_to_path(destination))
+        exec_raw('/bin/bash -c set -o pipefail; ' + execute_on_remote_command + '"rbd export --no-progress ' + ceph_rbd_object_to_path(source) + '@' + snapshot_name + ' -" | pv --rate --bytes --progress --timer --eta --size ' + str(image_size) + ' | rbd import --no-progress - ' + ceph_rbd_object_to_path(destination))
 
         log_message('copy finished', LOGLEVEL_INFO)
-        snapshot_name = create_ceph_rbd_snapshot(source_pool, source_image, command_inject=execute_on_remote_command)
         create_ceph_rbd_snapshot(destination_pool, destination_image, snapshot_name)
 
     if mode['mode'] == BACKUPMODE_INCREMENTAL:
@@ -245,7 +245,7 @@ try:
 
         log_message('beginning incremental copy from "' + execute_on_remote_command + ceph_rbd_object_to_path(source) + '@' + snapshot_old + '" to ' + ceph_rbd_object_to_path(destination), LOGLEVEL_INFO)
 
-        exec_raw('/bin/bash -c set -o pipefail; ' + execute_on_remote_command + '"rbd export-diff --no-progress ' + whole_object_command + ' --from-snap ' + snapshot_old + ' ' + ceph_rbd_object_to_path(source) + '@' + snapshot_new + ' -" | pv --rate --bytes | rbd import-diff --no-progress - ' + ceph_rbd_object_to_path(destination))
+        exec_raw('/bin/bash -c set -o pipefail; ' + execute_on_remote_command + '"rbd export-diff --no-progress ' + whole_object_command + ' --from-snap ' + snapshot_old + ' ' + ceph_rbd_object_to_path(source) + '@' + snapshot_new + ' -" | pv --rate --bytes --timer | rbd import-diff --no-progress - ' + ceph_rbd_object_to_path(destination))
 
         log_message('copy finished', LOGLEVEL_INFO)
         remove_ceph_rbd_snapshot(source_pool, source_image, snapshot_old, execute_on_remote_command)
